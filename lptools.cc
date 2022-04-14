@@ -116,7 +116,7 @@ std::string findGroup(std::unique_ptr<MetadataBuilder>& builder) {
 
 int main(int argc, char **argv) {
     if(argc<=1) {
-        std::cerr << "Usage: " << argv[0] << " <create|remove|resize|rename>" << std::endl;
+        std::cerr << "Usage: " << argv[0] << " <create|remove|resize|replace|map|unmap|free|unlimited-group|clear-cow>" << std::endl;
         exit(1);
     }
     auto builder = makeBuilder();
@@ -243,7 +243,10 @@ int main(int argc, char **argv) {
         auto partName = argv[2];
         auto dmState = android::dm::DeviceMapper::Instance().GetState(partName);
         if(dmState == android::dm::DmDeviceState::ACTIVE) {
-            android::fs_mgr::DestroyLogicalPartition(partName);
+            if (!android::fs_mgr::DestroyLogicalPartition(partName)) {
+                std::cerr << "Unable to unmap " << partName << std::endl;
+                exit(1);
+            }
         }
         exit(0);
     } else if(strcmp(argv[1], "free") == 0) {
