@@ -74,12 +74,19 @@ std::unique_ptr<MetadataBuilder> makeBuilder() {
     return builder;
 }
 
-void saveToDisk(std::unique_ptr<MetadataBuilder> builder) {
+bool saveToDisk(std::unique_ptr<MetadataBuilder> builder) {
     auto newMetadata = builder->Export();
-    int nSlots = 2;//pt->geometry.metadata_slot_count;
-    for(int slot=0; slot < nSlots; slot++) {
-        std::cout << "Saving the updated partition table " << UpdatePartitionTable(opener, "super", *newMetadata, slot) << " for slot " << slot << std::endl;
+    if(!newMetadata) {
+        return false;
     }
+    int nSlots = 2;//pt->geometry.metadata_slot_count;
+    bool ok = true;
+    for(int slot=0; slot < nSlots; slot++) {
+        auto result = UpdatePartitionTable(opener, "super", *newMetadata, slot);
+        std::cout << "Saving the updated partition table " << result << " for slot " << slot << std::endl;
+        ok &= result;
+    }
+    return ok;
 }
 
 inline bool ends_with(std::string const & value, std::string const & ending)
@@ -173,8 +180,20 @@ int main(int argc, char **argv) {
         auto partName = argv[2];
         auto size = strtoll(argv[3], NULL, 0);
         auto partition = builder->FindPartition(partName);
-        std::cout << "Resizing partition " << builder->ResizePartition(partition, size) << std::endl;
-        saveToDisk(std::move(builder));
+        if(!partition) {
+            std::cerr << "Partition does not exist" << std::endl;
+            exit(1);
+        }
+        auto result = builder->ResizePartition(partition, size);
+        if(!result) {
+            std::cerr << "Not enough space to resize partition" << std::endl;
+            exit(1);
+        }
+        if(!saveToDisk(std::move(builder))) {
+            std::cerr << "Failed to write partition table" << std::endl;
+            exit(1);
+        }
+        std::cout << "Resizing partition " << result << std::endl;
         exit(0);
     } else if(strcmp(argv[1], "replace") == 0) {
         if(argc != 4) {
