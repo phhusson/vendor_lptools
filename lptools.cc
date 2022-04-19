@@ -143,10 +143,20 @@ int main(int argc, char **argv) {
             exit(1);
         }
         partition = builder->AddPartition(partName, group, 0);
+        if(partition == nullptr) {
+            std::cerr << "Failed to add partition" << std::endl;
+            exit(1);
+        }
         auto result = builder->ResizePartition(partition, size);
         std::cout << "Growing partition " << result << std::endl;
-        if(!result) return 1;
-        saveToDisk(std::move(builder));
+        if(!result) {
+            std::cerr << "Not enough space to resize partition" << std::endl;
+            exit(1);
+        }
+        if(!saveToDisk(std::move(builder))) {
+            std::cerr << "Failed to write partition table" << std::endl;
+            exit(1);
+        }
 
         std::string dmPath;
         CreateLogicalPartitionParams params {
@@ -157,6 +167,10 @@ int main(int argc, char **argv) {
                 .force_writable = true,
         };
         auto dmCreateRes = android::fs_mgr::CreateLogicalPartition(params, &dmPath);
+        if(!dmCreateRes) {
+            std::cerr << "Could not map partition: " << partName << std::endl;
+            exit(1);
+        }
         std::cout << "Creating dm partition for " << partName << " answered " << dmCreateRes << " at " << dmPath << std::endl;
         exit(0);
     } else if(strcmp(argv[1], "remove") == 0) {
@@ -170,7 +184,10 @@ int main(int argc, char **argv) {
             android::fs_mgr::DestroyLogicalPartition(partName);
         }
         builder->RemovePartition(partName);
-        saveToDisk(std::move(builder));
+        if(!saveToDisk(std::move(builder))) {
+            std::cerr << "Failed to write partition table" << std::endl;
+            exit(1);
+        }
         exit(0);
     } else if(strcmp(argv[1], "resize") == 0) {
         if(argc != 4) {
@@ -180,7 +197,7 @@ int main(int argc, char **argv) {
         auto partName = argv[2];
         auto size = strtoll(argv[3], NULL, 0);
         auto partition = builder->FindPartition(partName);
-        if(!partition) {
+        if(partition == nullptr) {
             std::cerr << "Partition does not exist" << std::endl;
             exit(1);
         }
@@ -207,6 +224,10 @@ int main(int argc, char **argv) {
         if(srcPartition == nullptr) {
             srcPartition = builder->FindPartition(src + ::android::base::GetProperty("ro.boot.slot_suffix", ""));
         }
+        if(srcPartition == nullptr) {
+            std::cerr << "Original partition does not exist" << std::endl;
+            exit(1);
+        }
         auto dstPartition = builder->FindPartition(dst);
         if(dstPartition == nullptr) {
             dstPartition = builder->FindPartition(dst + ::android::base::GetProperty("ro.boot.slot_suffix", ""));
@@ -232,10 +253,17 @@ int main(int argc, char **argv) {
         builder->RemovePartition(srcPartition->name());
         builder->RemovePartition(dstPartitionName);
         auto newDstPartition = builder->AddPartition(dstPartitionName, group, 0);
+        if(newDstPartition == nullptr) {
+            std::cerr << "Failed to add partition" << std::endl;
+            exit(1);
+        }
         for(auto&& extent: originalExtents) {
             newDstPartition->AddExtent(std::move(extent));
         }
-        saveToDisk(std::move(builder));
+        if(!saveToDisk(std::move(builder))) {
+            std::cerr << "Failed to write partition table" << std::endl;
+            exit(1);
+        }
         exit(0);
     } else if(strcmp(argv[1], "map") == 0) {
         if(argc != 3) {
@@ -252,6 +280,10 @@ int main(int argc, char **argv) {
                 .force_writable = true,
         };
         auto dmCreateRes = android::fs_mgr::CreateLogicalPartition(params, &dmPath);
+        if(!dmCreateRes) {
+            std::cerr << "Could not map partition: " << partName << std::endl;
+            exit(1);
+        }
         std::cout << "Creating dm partition for " << partName << " answered " << dmCreateRes << " at " << dmPath << std::endl;
         exit(0);
     } else if(strcmp(argv[1], "unmap") == 0) {
@@ -321,7 +353,10 @@ int main(int argc, char **argv) {
                 builder->RemovePartition(partition->name());
             }
         }
-        saveToDisk(std::move(builder));
+        if(!saveToDisk(std::move(builder))) {
+            std::cerr << "Failed to write partition table" << std::endl;
+            exit(1);
+        }
         return 0;
     }
 
