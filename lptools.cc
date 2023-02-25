@@ -30,6 +30,7 @@
 #include <vector>
 #include <chrono>
 
+#include <android-base/file.h>
 #include <android-base/parseint.h>
 #include <android-base/properties.h>
 #include <android-base/strings.h>
@@ -48,45 +49,86 @@
 using namespace android;
 using namespace android::fs_mgr;
 
-class FileOrBlockDeviceOpener final : public PartitionOpener {
-public:
-    android::base::unique_fd Open(const std::string& path, int flags) const override {
-        // Try a local file first.
-        android::base::unique_fd fd;
+using namespace std::literals;
 
-#ifdef __ANDROID__
-        fd.reset(android_get_control_file(path.c_str()));
-        if (fd >= 0) return fd;
-#endif
-        fd.reset(open(path.c_str(), flags));
-        if (fd >= 0) return fd;
+// https://cs.android.com/android/platform/superproject/+/android-13.0.0_r3:system/core/fastboot/device/utility.cpp;l=202
+bool UpdateAllPartitionMetadata(const std::string& super_name,
+                                const android::fs_mgr::LpMetadata& metadata) {
+    // https://github.com/phhusson/vendor_lptools/blob/ff09b3f150cb0bceaf7c3bd428bfec812d7440bc/lptools.cc#L82
+    size_t num_slots = 2;//pt->geometry.metadata_slot_count;
 
-        return PartitionOpener::Open(path, flags);
-    }
-};
-
-static FileOrBlockDeviceOpener opener;
-std::unique_ptr<MetadataBuilder> makeBuilder() {
-    auto builder = MetadataBuilder::New(opener, "super", 0);
-    if(builder == nullptr) {
-        std::cout << "Failed creating super builder" << std::endl;
-    }
-    return builder;
-}
-
-bool saveToDisk(std::unique_ptr<MetadataBuilder> builder) {
-    auto newMetadata = builder->Export();
-    if(!newMetadata) {
-        return false;
-    }
-    int nSlots = 2;//pt->geometry.metadata_slot_count;
     bool ok = true;
-    for(int slot=0; slot < nSlots; slot++) {
-        auto result = UpdatePartitionTable(opener, "super", *newMetadata, slot);
-        std::cout << "Saving the updated partition table " << result << " for slot " << slot << std::endl;
-        ok &= result;
+    for (size_t i = 0; i < num_slots; i++) {
+        ok &= UpdatePartitionTable(super_name, metadata, i);
     }
     return ok;
+}
+
+// https://cs.android.com/android/platform/superproject/+/android-13.0.0_r3:system/core/fastboot/device/utility.cpp;l=96
+std::optional<std::string> FindPhysicalPartition(const std::string& name) {
+    if (android::base::StartsWith(name, "../") || name.find("/../") != std::string::npos) {
+        return {};
+    }
+    std::string path = "/dev/block/by-name/" + name;
+    if (access(path.c_str(), W_OK) < 0) {
+        return {};
+    }
+    return path;
+}
+
+// https://cs.android.com/android/platform/superproject/+/android-13.0.0_r3:system/core/fastboot/device/utility.cpp;l=217
+std::string GetSuperSlotSuffix(const std::string& partition_name) {
+    std::string current_slot_suffix = ::android::base::GetProperty("ro.boot.slot_suffix", "");
+    uint32_t current_slot_number = SlotNumberForSlotSuffix(current_slot_suffix);
+    std::string super_partition = fs_mgr_get_super_partition_name(current_slot_number);
+    if (GetPartitionSlotSuffix(super_partition).empty()) {
+        return current_slot_suffix;
+    }
+
+    std::string slot_suffix = GetPartitionSlotSuffix(partition_name);
+    if (!slot_suffix.empty()) {
+        return slot_suffix;
+    }
+    return current_slot_suffix;
+}
+
+// https://cs.android.com/android/platform/superproject/+/android-13.0.0_r3:system/core/fastboot/device/commands.cpp;l=440
+class PartitionBuilder {
+public:
+    explicit PartitionBuilder();
+
+    bool Write();
+    bool Valid() const { return !!builder_; }
+    MetadataBuilder* operator->() const { return builder_.get(); }
+
+private:
+    std::string super_device_;
+    uint32_t slot_number_;
+    std::unique_ptr<MetadataBuilder> builder_;
+};
+
+PartitionBuilder::PartitionBuilder() {
+    auto partition_name = "system" + ::android::base::GetProperty("ro.boot.slot_suffix", "");
+    std::string slot_suffix = GetSuperSlotSuffix(partition_name);
+    slot_number_ = android::fs_mgr::SlotNumberForSlotSuffix(slot_suffix);
+    auto super_device = FindPhysicalPartition(fs_mgr_get_super_partition_name(slot_number_));
+    if (!super_device) {
+        return;
+    }
+    super_device_ = *super_device;
+    builder_ = MetadataBuilder::New(super_device_, slot_number_);
+}
+
+bool PartitionBuilder::Write() {
+    auto metadata = builder_->Export();
+    if (!metadata) {
+        return false;
+    }
+    return UpdateAllPartitionMetadata(super_device_, *metadata.get());
+}
+
+bool saveToDisk(PartitionBuilder builder) {
+    return builder.Write();
 }
 
 inline bool ends_with(std::string const & value, std::string const & ending)
@@ -95,7 +137,7 @@ inline bool ends_with(std::string const & value, std::string const & ending)
     return std::equal(ending.rbegin(), ending.rend(), value.rbegin());
 }
 
-std::string findGroup(std::unique_ptr<MetadataBuilder>& builder) {
+std::string findGroup(PartitionBuilder& builder) {
     auto groups = builder->ListGroups();
 
     auto partitionName = "system" + ::android::base::GetProperty("ro.boot.slot_suffix", "");
@@ -126,7 +168,7 @@ int main(int argc, char **argv) {
         std::cerr << "Usage: " << argv[0] << " <create|remove|resize|replace|map|unmap|free|unlimited-group|clear-cow>" << std::endl;
         exit(1);
     }
-    auto builder = makeBuilder();
+    PartitionBuilder builder;
     auto group = findGroup(builder);
     std::cout << "Best group seems to be " << group << std::endl;
 
